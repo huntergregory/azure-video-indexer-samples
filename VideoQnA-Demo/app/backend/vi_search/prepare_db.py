@@ -10,6 +10,7 @@ from dotenv import dotenv_values
 from vi_search.constants import BASE_DIR, DATA_DIR
 from vi_search.language_models.language_models import LanguageModels
 from vi_search.prep_scenes import get_sections_generator
+from vi_search.mock_prep_scenes import mock_sections_generator
 from vi_search.prompt_content_db.prompt_content_db import PromptContentDB, VECTOR_FIELD_NAME
 from vi_search.vi_client.video_indexer_client import init_video_indexer_client, VideoIndexerClient
 
@@ -83,8 +84,21 @@ class CustomEncoder(json.JSONEncoder):
 
 
 def prepare_db(db_name, data_dir, language_models: LanguageModels, prompt_content_db: PromptContentDB,
-               use_videos_ids_cache=True, video_ids_cache_file='videos_ids_cache.json', verbose=False):
+               use_videos_ids_cache=True, video_ids_cache_file='videos_ids_cache.json', verbose=False, mock_indexer=False):
+    if mock_indexer:
+        sections_generator = mock_sections_generator(embedding_cb=language_models.get_text_embeddings)
+    else:
+        sections_generator = client_section_generator()
 
+    ### Creating new DB ###
+    embeddings_size = language_models.get_embeddings_size()
+    prompt_content_db.create_db(db_name, vector_search_dimensions=embeddings_size)
+    prompt_content_db.add_sections_to_db(sections_generator, upload_batch_size=100, verbose=verbose)
+
+    print("Done adding sections to DB. Exiting...")
+
+def client_section_generator(db_name, data_dir, language_models: LanguageModels, prompt_content_db: PromptContentDB,
+               use_videos_ids_cache=True, video_ids_cache_file='videos_ids_cache.json', verbose=False):
     videos = list(data_dir.glob('*.mp4'))
     video_ids_cache_file = Path(video_ids_cache_file)
 
@@ -124,20 +138,11 @@ def prepare_db(db_name, data_dir, language_models: LanguageModels, prompt_conten
             pprint(prompt_content)
             print()
 
-    ### Prepare language models ###
-
-    embeddings_size = language_models.get_embeddings_size()
-
     ### Adding prompt content sections ###
     account_details = client.get_account_details()
     sections_generator = get_sections_generator(videos_prompt_content, account_details, embedding_cb=language_models.get_text_embeddings,
                                                 embeddings_col_name=VECTOR_FIELD_NAME)
-
-    ### Creating new DB ###
-    prompt_content_db.create_db(db_name, vector_search_dimensions=embeddings_size)
-    prompt_content_db.add_sections_to_db(sections_generator, upload_batch_size=100, verbose=verbose)
-
-    print("Done adding sections to DB. Exiting...")
+    return sections_generator
 
 
 def main():
@@ -181,7 +186,9 @@ def main():
     else:
         raise ValueError(f"Unknown language model: {lang_model}")
 
-    prepare_db(db_name, DATA_DIR, language_models, prompt_content_db, verbose=verbose)
+    fake_indexer = os.environ.get("FAKE_INDEXER", "false")
+
+    prepare_db(db_name, DATA_DIR, language_models, prompt_content_db, verbose=verbose, mock_indexer=fake_indexer == "true")
 
 
 if __name__ == "__main__":
